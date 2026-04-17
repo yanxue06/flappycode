@@ -40,14 +40,25 @@ or, from this folder:
 ## Controls
 
 - **Space / Up / W / click** — flap
-- **P** — pause / resume
-- **R** — restart after game over
-- **Drag the dark title strip** — move the window around the screen
+- **P** — pause / resume (or the `II` button)
+- **R** — restart any time (or the `↻` button)
+- **+** / **−** — grow / shrink the window
+- **Drag the dark title strip** — move the window
+- **Drag the bottom-right corner grip** — resize
 - **×** button or **Esc** — quit
 
 The window is frameless, semi-transparent (`alpha = 0.92`), and stays on
 top of everything else. It starts in the top-right of your main display;
 drag it wherever.
+
+### macOS focus note
+
+Frameless (`overrideredirect`) Tk windows don't become "key" by default on
+macOS, so keypresses are ignored. Flappy Code works around this with
+`::tk::unsupported::MacWindowStyle plain none`, a brief
+`overrideredirect(False)/(True)` toggle after the window is mapped, and a
+`focus_force()` every time you click the game. If keys still feel iffy
+after launch, click inside the game once to grab focus.
 
 ## Tweaking
 
