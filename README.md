@@ -43,13 +43,31 @@ or, from this folder:
 - **P** — pause / resume (or the `II` button)
 - **R** — restart any time (or the `↻` button)
 - **+** / **−** — grow / shrink the window
+- **[** / **]** — more / less transparent sky (or the `◐` button to cycle, or **T**)
 - **Drag the dark title strip** — move the window
 - **Drag the bottom-right corner grip** — resize
 - **×** button or **Esc** — quit
 
-The window is frameless, semi-transparent (`alpha = 0.92`), and stays on
-top of everything else. It starts in the top-right of your main display;
-drag it wherever.
+The window is frameless and stays on top of everything else. It starts
+in the top-right of your main display; drag it wherever.
+
+## Transparency
+
+The *sky* is the only translucent part — the bird, pipes, ground, score,
+and title bar all stay crisp. Six levels cycle in order:
+
+1. solid — opaque sky
+2. mostly solid — ~75% fill
+3. medium (default) — ~50% fill
+4. mostly clear — ~25% fill
+5. very clear — ~12% fill
+6. invisible — no sky drawn at all; you see straight through to whatever
+   is behind the window
+
+The effect is produced with Tk's `stipple` patterns on a single canvas
+rectangle plus the macOS `-transparent` window attribute and a
+`systemTransparent` canvas background. Very cheap — no per-pixel alpha
+blending, and nothing changes about the bird or pipes.
 
 ### macOS focus note
 

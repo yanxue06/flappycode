@@ -8,6 +8,8 @@ Design goals
 ------------
 * Translucent, always-on-top, draggable frameless window.
 * Resizable (drag the corner grip, or use +/- keys).
+* Selective transparency: the sky background can be dialed from solid to
+  fully see-through while the bird and pipes stay fully opaque.
 * Sleeps between frames and only redraws what it needs, so CPU stays low.
 * One file, no dependencies.
 
@@ -17,6 +19,8 @@ Controls
 * P                                   : pause / resume
 * R                                   : restart (works any time)
 * + / =   and   - / _                 : grow / shrink the window
+* [   and   ]                         : more / less transparent sky
+* T                                   : cycle sky transparency
 * Drag the top bar                    : move the window
 * Drag the bottom-right corner        : resize
 * X button or Esc                     : quit
@@ -73,8 +77,23 @@ TITLE_FG = "#cfe6ef"
 TEXT_FG = "#ffffff"
 GRIP_FG = "#8aa7b0"
 
-WINDOW_ALPHA = 0.92
 IS_MAC = platform.system() == "Darwin"
+
+# Transparency levels for the sky background only. Each level uses a
+# different stipple pattern so a fraction of the sky pixels are drawn and
+# the rest show whatever is behind the window (Cursor, VS Code, etc.).
+# Level 0 is fully opaque; higher levels show more of what's behind.
+# None means no stipple (solid fill). "" empty string in stipple also means
+# solid; we use None and filter.
+SKY_LEVELS: list[tuple[str, str]] = [
+    ("solid",       ""),          # level 0 - fully opaque
+    ("mostly solid", "gray75"),   # level 1
+    ("medium",      "gray50"),    # level 2
+    ("mostly clear", "gray25"),   # level 3
+    ("very clear",  "gray12"),    # level 4
+    ("invisible",   "HIDE"),      # level 5 - sky rect is simply hidden
+]
+DEFAULT_SKY_LEVEL = 2  # start at "medium" so you can see Cursor through it
 
 
 @dataclass
@@ -109,15 +128,31 @@ class FlappyGame:
         # resulting window still accept keyboard input.
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
+        # Keep -alpha at 1.0; we use selective per-region transparency below
+        # so the bird and pipes stay crisp while the sky is see-through.
         try:
-            self.root.attributes("-alpha", WINDOW_ALPHA)
+            self.root.attributes("-alpha", 1.0)
         except tk.TclError:
             pass
+        # On macOS, enable the native "transparent" window style so pixels
+        # filled with the special color "systemTransparent" actually show
+        # what's behind the window. Elsewhere this attribute is a no-op.
+        self._has_real_transparency = False
+        if IS_MAC:
+            try:
+                self.root.wm_attributes("-transparent", True)
+                self._has_real_transparency = True
+            except tk.TclError:
+                pass
         sw = self.root.winfo_screenwidth()
         x = max(20, sw - self.width - 40)
         y = 60
         self.root.geometry(f"{self.width}x{self.height}+{x}+{y}")
-        self.root.configure(bg=BG)
+        # Root bg is transparent on macOS so the canvas "holes" are real
+        # holes; fall back to a dark color otherwise.
+        self.root.configure(
+            bg=("systemTransparent" if self._has_real_transparency else BG)
+        )
 
         # macOS-only: tell Tk to treat this as a plain, borderless window that
         # can still be activated (receives keystrokes). Safe no-op elsewhere.
@@ -193,12 +228,27 @@ class FlappyGame:
         self.pause_btn.pack(side="right")
         self.pause_btn.bind("<Button-1>", lambda _e: self._toggle_pause())
 
-        # Main canvas.
+        # Transparency toggle button in the title bar.
+        self.trans_btn = tk.Label(
+            self.title_bar,
+            text=" \u25d0 ",   # half-filled circle glyph
+            bg=TITLE_BG,
+            fg="#8ad4ff",
+            font=("Menlo", 12, "bold"),
+            cursor="hand2",
+        )
+        self.trans_btn.pack(side="right")
+        self.trans_btn.bind("<Button-1>", lambda _e: self._cycle_sky())
+
+        # Main canvas. Background is "systemTransparent" on macOS so the
+        # sky stipple can actually be see-through; elsewhere it's a solid
+        # sky color (no real transparency available).
+        canvas_bg = "systemTransparent" if self._has_real_transparency else SKY_BOT
         self.canvas = tk.Canvas(
             self.root,
             width=self.width,
             height=self.height - TITLE_H,
-            bg=SKY_BOT,
+            bg=canvas_bg,
             highlightthickness=0,
             bd=0,
             takefocus=1,
@@ -217,6 +267,13 @@ class FlappyGame:
         self.root.bind("<Button-1>", lambda _e: self._grab_focus(), add="+")
 
         # Pre-create the persistent shapes. We reuse these every frame.
+        # Sky rectangle: drawn first so everything else stacks above it.
+        # Its stipple pattern is what controls background transparency.
+        self.sky_level = DEFAULT_SKY_LEVEL
+        self.sky_id = self.canvas.create_rectangle(
+            0, 0, 0, 0, fill=SKY_BOT, outline="",
+        )
+        self._apply_sky_level()
         self.ground_id = self.canvas.create_rectangle(
             0, 0, 0, 0, fill=GROUND, outline="",
         )
@@ -267,6 +324,13 @@ class FlappyGame:
             target.bind("<KeyPress-equal>", lambda _e: self._resize_step(+40))
             target.bind("<KeyPress-minus>", lambda _e: self._resize_step(-40))
             target.bind("<KeyPress-underscore>", lambda _e: self._resize_step(-40))
+            # Sky transparency: ] = more opaque, [ = more transparent, T = cycle.
+            target.bind("<KeyPress-bracketright>",
+                        lambda _e: self._step_sky(-1))
+            target.bind("<KeyPress-bracketleft>",
+                        lambda _e: self._step_sky(+1))
+            target.bind("<KeyPress-t>", lambda _e: self._cycle_sky())
+            target.bind("<KeyPress-T>", lambda _e: self._cycle_sky())
 
     # -- focus helpers -----------------------------------------------------
     def _grab_focus(self) -> None:
@@ -331,6 +395,8 @@ class FlappyGame:
         # and reposition the score text.
         play_h = self._play_h()
         ground_h = self._ground_h()
+        # Sky covers the playable area.
+        self.canvas.coords(self.sky_id, 0, 0, self.width, play_h)
         self.canvas.coords(
             self.ground_id,
             0, play_h, self.width, play_h + ground_h,
@@ -348,6 +414,41 @@ class FlappyGame:
             self.width - GRIP_SIZE, ch,
             self.width, ch - GRIP_SIZE,
         )
+
+    # -- sky transparency --------------------------------------------------
+    TITLE_DEFAULT = "  Flappy Code   space=flap  P=pause  R=restart"
+    _sky_hint_job = None
+
+    def _apply_sky_level(self) -> None:
+        """Update the sky rectangle to match self.sky_level."""
+        name, stipple = SKY_LEVELS[self.sky_level]
+        if stipple == "HIDE":
+            self.canvas.itemconfigure(self.sky_id, state="hidden")
+        else:
+            self.canvas.itemconfigure(self.sky_id, state="normal")
+            # Tk accepts an empty stipple string to mean "solid".
+            self.canvas.itemconfigure(self.sky_id, stipple=stipple)
+        # Brief hint in the title label so you know the level.
+        try:
+            self.title_lbl.configure(text=f"  Sky: {name}   ([  ]  T)")
+            if self._sky_hint_job is not None:
+                self.root.after_cancel(self._sky_hint_job)
+            self._sky_hint_job = self.root.after(
+                1100,
+                lambda: self.title_lbl.configure(text=self.TITLE_DEFAULT),
+            )
+        except Exception:
+            pass
+
+    def _step_sky(self, delta: int) -> None:
+        new = max(0, min(len(SKY_LEVELS) - 1, self.sky_level + delta))
+        if new != self.sky_level:
+            self.sky_level = new
+            self._apply_sky_level()
+
+    def _cycle_sky(self) -> None:
+        self.sky_level = (self.sky_level + 1) % len(SKY_LEVELS)
+        self._apply_sky_level()
 
     # -- geometry helpers --------------------------------------------------
     def _play_h(self) -> int:
