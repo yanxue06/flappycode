@@ -569,6 +569,7 @@ class FlappyGame:
         self.pipe_ids: dict[int, tuple[int, int]] = {}
         self.score = 0
         self.state = "ready"
+        self._static_rendered = False
         self._spawn_pipe(self.width + 40)
         self._spawn_pipe(self.width + 40 + self._pipe_spacing())
         self._relayout()
@@ -610,6 +611,7 @@ class FlappyGame:
     def _flap(self) -> None:
         if self.state == "ready":
             self.state = "playing"
+            self._static_rendered = False
             self._render_msg("")
         if self.state == "playing":
             self.bird_v = self._flap_v()
@@ -632,15 +634,29 @@ class FlappyGame:
     def _tick(self) -> None:
         if self.state == "playing":
             self._step()
-        self._render()
+            self._render()
+        elif self.state in ("ready", "dead"):
+            # Static states: only render once when entering the state, not
+            # every frame. The _reset and _die methods already call
+            # _render_msg, so we just need the bird/pipe positions drawn once.
+            if not getattr(self, "_static_rendered", False):
+                self._render()
+                self._static_rendered = True
+        # "paused" also skips rendering — nothing moves.
         self.root.after(FRAME_MS, self._tick)
 
     def _step(self) -> None:
+        # Cache scaled values once per frame instead of recomputing per-pipe.
         play_h = self._play_h()
-        bird_r = self._bird_r()
-        bird_x = self._bird_x()
+        sx = self._scale_x()
+        sy = self._scale_y()
+        bird_r = BIRD_R_REF * min(sx, sy)
+        bird_x = BIRD_X_REF * sx
 
-        self.bird_v = min(self.bird_v + self._gravity(), self._max_fall())
+        gravity = GRAVITY_REF * sy
+        max_fall = MAX_FALL_REF * sy
+
+        self.bird_v = min(self.bird_v + gravity, max_fall)
         self.bird_y += self.bird_v
 
         if self.bird_y - bird_r <= 0:
@@ -650,8 +666,9 @@ class FlappyGame:
             self._die()
             return
 
-        speed = self._pipe_speed()
-        pipe_w = self._pipe_w()
+        diff_mult = self._difficulty_mult()
+        speed = PIPE_SPEED_REF * sx * diff_mult
+        pipe_w = PIPE_W_REF * sx
         for pipe in self.pipes:
             pipe.x -= speed
             if not pipe.scored and pipe.x + pipe_w < bird_x - bird_r:
@@ -661,7 +678,7 @@ class FlappyGame:
 
         if self.pipes and self.pipes[0].x + pipe_w < -4:
             self._remove_pipe(self.pipes[0])
-        spacing = self._pipe_spacing()
+        spacing = PIPE_SPACING_REF * sx
         last_x = max((p.x for p in self.pipes), default=self.width)
         if last_x < self.width - spacing + 40:
             self._spawn_pipe(last_x + spacing)
@@ -680,6 +697,7 @@ class FlappyGame:
 
     def _die(self) -> None:
         self.state = "dead"
+        self._static_rendered = False
         self._render_msg(
             f"Game Over\nScore: {self.score}\n(R or \u21bb to restart)"
         )
