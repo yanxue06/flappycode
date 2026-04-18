@@ -46,6 +46,7 @@ MAX_WIDTH = 900
 MAX_HEIGHT = 1200
 TITLE_H = 24
 GRIP_SIZE = 22          # bigger so the user can see the drag handle
+EDGE_ZONE = 6           # pixels from each edge that trigger resize cursor
 
 # Preset sizes the "size" button cycles through. Aspect ratio is preserved.
 SIZE_PRESETS: list[tuple[str, int, int]] = [
@@ -290,9 +291,12 @@ class FlappyGame:
             w.bind("<ButtonPress-1>", self._drag_start)
             w.bind("<B1-Motion>", self._drag_move)
 
-        # Click anywhere on the game area to flap. Also steal focus back so
-        # the keyboard keeps working (macOS overrideredirect focus quirk).
-        self.canvas.bind("<Button-1>", self._canvas_click)
+        # Edge-resize: detect which edge/corner the mouse is near and allow
+        # dragging to resize from any side.
+        self.canvas.bind("<Motion>", self._edge_cursor)
+        self.canvas.bind("<ButtonPress-1>", self._edge_press)
+        self.canvas.bind("<B1-Motion>", self._edge_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._edge_release)
         # Any click on the root should also grab focus.
         self.root.bind("<Button-1>", lambda _e: self._grab_focus(), add="+")
 
@@ -396,7 +400,85 @@ class FlappyGame:
         y = event.y_root - self._drag_dy
         self.root.geometry(f"+{x}+{y}")
 
-    # -- resize ------------------------------------------------------------
+    # -- edge resize (all edges + corners) ---------------------------------
+    _edge_mode: str = ""  # e.g. "r", "b", "rb", "lt", etc.
+
+    def _hit_edge(self, event: tk.Event) -> str:
+        """Return a string like 'l', 'r', 'b', 't', 'lt', 'rb', etc."""
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        edge = ""
+        if event.y >= ch - EDGE_ZONE:
+            edge += "b"
+        if event.y <= EDGE_ZONE:
+            edge += "t"
+        if event.x <= EDGE_ZONE:
+            edge += "l"
+        if event.x >= cw - EDGE_ZONE:
+            edge += "r"
+        return edge
+
+    _EDGE_CURSORS = {
+        "l": "left_side", "r": "right_side",
+        "t": "top_side", "b": "bottom_side",
+        "lt": "top_left_corner", "tl": "top_left_corner",
+        "rt": "top_right_corner", "tr": "top_right_corner",
+        "lb": "bottom_left_corner", "bl": "bottom_left_corner",
+        "rb": "bottom_right_corner", "br": "bottom_right_corner",
+    }
+
+    def _edge_cursor(self, event: tk.Event) -> None:
+        edge = self._hit_edge(event)
+        cursor = self._EDGE_CURSORS.get(edge, "")
+        try:
+            self.canvas.configure(cursor=cursor)
+        except tk.TclError:
+            pass
+
+    def _edge_press(self, event: tk.Event) -> None:
+        self._grab_focus()
+        edge = self._hit_edge(event)
+        if edge:
+            self._edge_mode = edge
+            self._resize_x0 = event.x_root
+            self._resize_y0 = event.y_root
+            self._resize_w0 = self.width
+            self._resize_h0 = self.height
+            self._resize_wx0 = self.root.winfo_x()
+            self._resize_wy0 = self.root.winfo_y()
+        else:
+            self._edge_mode = ""
+            self._flap()
+
+    def _edge_drag(self, event: tk.Event) -> None:
+        if not self._edge_mode:
+            return
+        dx = event.x_root - self._resize_x0
+        dy = event.y_root - self._resize_y0
+        new_w = self._resize_w0
+        new_h = self._resize_h0
+        new_x = self._resize_wx0
+        new_y = self._resize_wy0
+        mode = self._edge_mode
+        if "r" in mode:
+            new_w = max(MIN_WIDTH, min(MAX_WIDTH, self._resize_w0 + dx))
+        if "l" in mode:
+            new_w = max(MIN_WIDTH, min(MAX_WIDTH, self._resize_w0 - dx))
+            new_x = self._resize_wx0 + (self._resize_w0 - new_w)
+        if "b" in mode:
+            new_h = max(MIN_HEIGHT, min(MAX_HEIGHT, self._resize_h0 + dy))
+        if "t" in mode:
+            new_h = max(MIN_HEIGHT, min(MAX_HEIGHT, self._resize_h0 - dy))
+            new_y = self._resize_wy0 + (self._resize_h0 - new_h)
+        self.width = new_w
+        self.height = new_h
+        self.root.geometry(f"{new_w}x{new_h}+{new_x}+{new_y}")
+        self._relayout()
+
+    def _edge_release(self, event: tk.Event) -> None:
+        self._edge_mode = ""
+
+    # -- legacy grip resize (kept for bottom-right corner grip graphic) -----
     def _resize_start(self, event: tk.Event) -> None:
         self._resize_x0 = event.x_root
         self._resize_y0 = event.y_root
